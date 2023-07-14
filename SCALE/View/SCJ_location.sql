@@ -1,0 +1,1 @@
+select location from location
