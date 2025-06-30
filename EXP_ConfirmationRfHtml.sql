@@ -28,7 +28,8 @@ GO
 			 | MK				| 29122023|  Container counter for dock management work
 			 | MK				| 06032024|  Remove qc for rework console display custom
 			 | PJVR				| 17032025|	 Hide Pass and View Picks Buttons for any SD Group Picking Work Instruction 
-			 | MK				| 06032024|   Remove qc for rework console display custom 
+			 | MK				| 06032024|   Remove qc for rework console display custom
+			 | MK				| 17062025|  #13341 Replenishment putaway sequence
 */
 ALTER      PROCEDURE [dbo].[EXP_ConfirmationRfHtmlOverride] (
     @SESSIONVALUE xml,
@@ -87,6 +88,49 @@ AS
 	DECLARE @LAUNCHNUM numeric(9,0) = (SELECT top 1 LAUNCH_NUM FROM WORK_INSTRUCTION (NOLOCK) WHERE WORK_UNIT = @workUnit)
  
  
+ 
+ -----Putawaysequence for replenishment
+;WITH WorkInstructionData AS (
+    SELECT 
+        wi.INTERNAL_INSTRUCTION_NUM,
+        wi.END_DATE_TIME,
+        wi.WORK_UNIT,
+        wi.TO_LOC,
+        loc.PUTAWAY_SEQ,
+        ROW_NUMBER() OVER (
+            PARTITION BY wi.WORK_UNIT 
+            ORDER BY ISNULL(loc.PUTAWAY_SEQ, wi.TO_LOC) DESC
+        ) - 1 AS NEW_SEQUENCE
+		,
+        MAX(wi.END_DATE_TIME) OVER (PARTITION BY wi.WORK_UNIT) AS MAX_END_DATE_TIME
+    FROM WORK_INSTRUCTION wi WITH (nolock)  
+    LEFT JOIN LOCATION loc WITH (nolock) 
+        ON loc.LOCATION = wi.TO_LOC 
+        AND wi.TO_WHS = loc.WAREHOUSE
+    WHERE wi.INSTRUCTION_TYPE = 'Detail'
+        AND wi.WORK_GROUP = 'Replenishment'
+        AND wi.WORK_UNIT = @workUnit
+        AND wi.CONDITION <> 'Open'
+),
+PDLocations AS (
+    SELECT LOCATION 
+    FROM LOCATION WITH (nolock)
+    WHERE LOCATION_CLASS = 'P&D' and active='Y'
+)
+UPDATE wi 
+SET 
+    wi.END_DATE_TIME = DATEADD(MILLISECOND, -ISNULL(wid.PUTAWAY_SEQ, 0), wid.MAX_END_DATE_TIME),
+    wi.SEQUENCE = wid.NEW_SEQUENCE,
+    wi.PROCESS_STAMP = 'ReplSeqStampCONF'
+FROM WORK_INSTRUCTION wi
+INNER JOIN WorkInstructionData wid 
+    ON wi.INTERNAL_INSTRUCTION_NUM = wid.INTERNAL_INSTRUCTION_NUM
+WHERE EXISTS (
+    SELECT 1 FROM PDLocations pd 
+    WHERE pd.LOCATION = @location
+)
+
+   -----Putawaysequence for replenishment
  
  ----12026 No open work fix
 if exists ( 
@@ -356,3 +400,4 @@ SET @html = REPLACE(@html,'<input type="Button" value="Override location"','<inp
 END 
 
 GO
+
