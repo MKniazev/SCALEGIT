@@ -1,7 +1,7 @@
 USE [ILS]
 GO
 
-/****** Object:  StoredProcedure [dbo].[EXP_ConfirmationRfHtmlOverride]    Script Date: 18/06/2025 13:21:40 ******/
+/****** Object:  StoredProcedure [dbo].[EXP_ConfirmationRfHtmlOverride]    Script Date: 01/07/2025 10:18:45 ******/
 SET ANSI_NULLS ON
 GO
 
@@ -11,14 +11,7 @@ GO
 
 
 
-
-
-
-
-
-
-
-
+ 
 /*
  Mod		 | Programmer		| Date       | Modification Description
  --------------------------------------------------------------------
@@ -30,6 +23,7 @@ GO
 			 | PJVR				| 17032025|	 Hide Pass and View Picks Buttons for any SD Group Picking Work Instruction 
 			 | MK				| 06032024|   Remove qc for rework console display custom
 			 | MK				| 17062025|  #13341 Replenishment putaway sequence
+			 | MK				| 23062025|  #1049 Mezzanine cage assignment + remove tote build from PND
 */
 ALTER      PROCEDURE [dbo].[EXP_ConfirmationRfHtmlOverride] (
     @SESSIONVALUE xml,
@@ -132,37 +126,7 @@ WHERE EXISTS (
 
    -----Putawaysequence for replenishment
  
- ----12026 No open work fix
-if exists ( 
-			 
-							select   INTERNAL_SHIPMENT_LINE_NUM from SHIPMENT_ALLOC_REQUEST  with (nolock)
-							where INTERNAL_SHIPMENT_NUM in (select INTERNAL_SHIPMENT_NUM
-							from shipment_header header with (nolock) where launch_num=@LAUNCHNUM) and FROM_WORK_ZONE like '%mezz%'  
-									and item in (select item  from ITEM_UNIT_OF_MEASURE with (nolock) where QUANTITY_UM='SH') 
-							group by INTERNAL_SHIPMENT_LINE_NUM
-							having   count(CONVERTED_QTY_UM) >1  
-							)
-		 
-begin 
-update sar set sar.CONVERTED_ALLOC_QTY=ALLOCATED_QTY,sar.CONVERTED_QTY_UM='EA',
-sar.CONTAINER_WEIGHT=IUm.WEIGHT, sar.CONTAINER_HEIGHT=ium.HEIGHT, sar.CONTAINER_LENGTH=ium.LENGTH, sar.CONTAINER_WIDTH=ium.WIDTH, PROCESS_STAMP='NoOpenWOrkFixWU'
-from SHIPMENT_ALLOC_REQUEST sar 
-left join ITEM_UNIT_OF_MEASURE ium with (nolock) on ium.item=sar.item and  ium.company=sar.company and ium.QUANTITY_UM='EA'
-where ium.QUANTITY_UM='EA' 
-		and sar.CONVERTED_QTY_UM='SH'
-		and INTERNAL_SHIPMENT_LINE_NUM in (
-											select   INTERNAL_SHIPMENT_LINE_NUM from SHIPMENT_ALLOC_REQUEST with (nolock)
-											where INTERNAL_SHIPMENT_NUM in (select INTERNAL_SHIPMENT_NUM from shipment_header header
-											with				(nolock) where launch_num=@LAUNCHNUM)and 
-											FROM_WORK_ZONE like '%mezz%'
-											group by INTERNAL_SHIPMENT_LINE_NUM
-											having   count(CONVERTED_QTY_UM) >1   
-											)   
-		and  INTERNAL_SHIPMENT_LINE_NUM in (select INTERNAL_SHIPMENT_LINE_NUM from shipment_detail    with (nolock) 
-				where launch_num=@LAUNCHNUM and item in (select item  from ITEM_UNIT_OF_MEASURE with (nolock) where QUANTITY_UM='SH') 
-																	) 
-end
- ----12026 No open work fix
+
 
 -----remove QC assignment
 		IF (select count(*) from work_instruction wi where  WORK_UNIT = @workUnit and  condition<>'closed'and INSTRUCTION_TYPE='detail' and
@@ -276,7 +240,8 @@ BEGIN
 
 ---SD GROUP PICKING
 
-	IF (SELECT PATINDEX('%<H3>Pick confirmation</H3>%',@html)) >0 AND @WORK_TYPE = 'SD Group Picking' AND @location != 'CNV-IN-00'
+	IF (SELECT PATINDEX('%<H3>Pick confirmation</H3>%',@html)) >0 AND @WORK_TYPE = 'SD Group Picking' 
+	AND @location != 'CNV-IN-00' and @location!='CNV-IN-EMB' and @location!='PND-IN-EMB' and @location not like '%cage%'
 	
 	BEGIN 
 	
@@ -392,12 +357,30 @@ BEGIN
 	END
 
 -- HIDE BUTTONS FOR PUTAWAY CONFIRMATION ON PICKING
-IF (SELECT PATINDEX('%<h3>Putaway confirmation</h3>%',@html)) >0 AND @WORK_TYPE = 'SD Group Picking' AND @location = 'CNV-IN-00'
+IF (SELECT PATINDEX('%<h3>Putaway confirmation</h3>%',@html)) >0 
+AND @WORK_TYPE in ( 'SD Group Picking', 'Group Picking','Case Picking','Full Pallet Picking') 
+AND ( @location = 'CNV-IN-00' or @location = 'CNV-IN-EMB' or @location = 'PND-IN-EMB' or @location='PCK-01')
 BEGIN  
 SET @html = REPLACE(@html,'<input type="Button" value="Pass"','<input type="Hidden" value="Pass"')
 SET @html = REPLACE(@html,'<input type="Button" value="Skip"','<input type="Hidden" value="Skip"')
 SET @html = REPLACE(@html,'<input type="Button" value="Override location"','<input type="Hidden" value="Override location"')
 END 
-
+ --HIDE BUTTONS FOR PUTAWAY CONFIRMATION ON PICKING
+IF (SELECT PATINDEX('%<h3>Putaway confirmation</h3>%',@html)) >0 AND @WORK_TYPE in ( 'SD Group Picking', 'Group Picking') 
+AND @location = 'UNDEF'
+BEGIN  
+SET @html = REPLACE(@html,'<input type="Button" value="Pass"','<input type="Hidden" value="Pass"')
+SET @html = REPLACE(@html,'<input type="Button" value="Skip"','<input type="Hidden" value="Skip"')
+SET @html = REPLACE(@html,'<input type="submit" value="OK"','<input type="Hidden" value="OK"')
+--SET @html = REPLACE(@html,'<input type="submit" value="OK" id="ok" name="ok" autofocus','<input type="submit" value="OK" id="ok" name="ok"')
+SET @html = REPLACE(@html,'<input type="Button" value="Bypass"','<input type="Hidden" value="Bypass"')
+SET @html = REPLACE(@html,
+    'value="Override location"',
+    'value="Cage Assignment"') 
+SET @html = REPLACE(@html,
+    'value="Cage Assignment" id="overrideButton" name="overrideButton" onclick="overrideClick()">',
+    'value="Cage Assignment" id="overrideButton" name="overrideButton" onclick="overrideClick()">
+    <script>setTimeout(function(){document.getElementById("overrideButton").focus();}, 50);</script>')
+END 
 GO
 
